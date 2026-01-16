@@ -41,6 +41,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const pathname = usePathname();
 
     useEffect(() => {
+        const handleAuthExpired = () => {
+            setIsAuthenticated(false);
+            setUser(null);
+            if (!publicPaths.includes(pathname)) {
+                router.push("/login");
+            }
+        };
+
+        if (typeof window !== "undefined") {
+            window.addEventListener("auth-expired", handleAuthExpired);
+        }
+
+        return () => {
+            if (typeof window !== "undefined") {
+                window.removeEventListener(
+                    "auth-expired",
+                    handleAuthExpired
+                );
+            }
+        };
+    }, [pathname, router]);
+
+    useEffect(() => {
         // Check if user has valid session on mount ONLY
         const checkAuth = async () => {
             // Check for token in URL (from redirect after login)
