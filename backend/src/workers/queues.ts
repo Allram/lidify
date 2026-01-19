@@ -2,12 +2,25 @@ import Bull from "bull";
 import { logger } from "../utils/logger";
 import { config } from "../config";
 
-// Parse Redis URL for Bull configuration
+// Parse Redis URL for Bull configuration (supports auth and DB index)
 const redisUrl = new URL(config.redisUrl);
-const redisConfig = {
+const redisDb = redisUrl.pathname ? parseInt(redisUrl.pathname.slice(1) || "0", 10) : undefined;
+const redisConfig: Bull.QueueOptions["redis"] = {
     host: redisUrl.hostname,
-    port: parseInt(redisUrl.port),
+    port: parseInt(redisUrl.port || "6379", 10),
 };
+
+if (redisUrl.username) {
+    redisConfig.username = decodeURIComponent(redisUrl.username);
+}
+
+if (redisUrl.password) {
+    redisConfig.password = decodeURIComponent(redisUrl.password);
+}
+
+if (redisDb !== undefined && !Number.isNaN(redisDb)) {
+    redisConfig.db = redisDb;
+}
 
 // Create queues
 export const scanQueue = new Bull("library-scan", {

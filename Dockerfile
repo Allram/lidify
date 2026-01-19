@@ -195,7 +195,7 @@ stderr_logfile_maxbytes=0
 priority=10
 
 [program:redis]
-command=/usr/bin/redis-server --dir /data/redis --appendonly yes
+command=/bin/bash -c "if [ -n \"$REDIS_PASSWORD\" ]; then exec /usr/bin/redis-server --dir /data/redis --appendonly yes --requirepass \"$REDIS_PASSWORD\"; else exec /usr/bin/redis-server --dir /data/redis --appendonly yes; fi"
 user=redis
 autostart=true
 autorestart=true
@@ -239,7 +239,7 @@ stdout_logfile=/dev/stdout
 stdout_logfile_maxbytes=0
 stderr_logfile=/dev/stderr
 stderr_logfile_maxbytes=0
-environment=DATABASE_URL="postgresql://lidify:lidify@localhost:5432/lidify",REDIS_URL="redis://localhost:6379",MUSIC_PATH="/music",BATCH_SIZE="10",SLEEP_INTERVAL="5",MAX_ANALYZE_SECONDS="90"
+environment=DATABASE_URL="postgresql://lidify:lidify@localhost:5432/lidify",REDIS_URL="%(ENV_REDIS_URL)s",MUSIC_PATH="/music",BATCH_SIZE="10",SLEEP_INTERVAL="5",MAX_ANALYZE_SECONDS="90"
 priority=50
 EOF
 
@@ -415,11 +415,21 @@ else
     echo "Generated and saved new SETTINGS_ENCRYPTION_KEY"
 fi
 
+# Determine Redis URL (supports auth)
+if [ -n "$REDIS_URL" ]; then
+    EFFECTIVE_REDIS_URL="$REDIS_URL"
+elif [ -n "$REDIS_PASSWORD" ]; then
+    EFFECTIVE_REDIS_URL="redis://:$REDIS_PASSWORD@localhost:6379"
+else
+    EFFECTIVE_REDIS_URL="redis://localhost:6379"
+fi
+export REDIS_URL="$EFFECTIVE_REDIS_URL"
+
 # Write environment file for backend
 cat > /app/backend/.env << ENVEOF
 NODE_ENV=production
 DATABASE_URL=postgresql://lidify:lidify@localhost:5432/lidify
-REDIS_URL=redis://localhost:6379
+REDIS_URL=$REDIS_URL
 PORT=3006
 MUSIC_PATH=/music
 TRANSCODE_CACHE_PATH=/data/cache/transcodes
@@ -431,6 +441,7 @@ echo "Starting Lidify..."
 exec env \
     NODE_ENV=production \
     DATABASE_URL="postgresql://lidify:lidify@localhost:5432/lidify" \
+    REDIS_URL="$REDIS_URL" \
     SESSION_SECRET="$SESSION_SECRET" \
     SETTINGS_ENCRYPTION_KEY="$SETTINGS_ENCRYPTION_KEY" \
     /usr/bin/supervisord -c /etc/supervisor/supervisord.conf

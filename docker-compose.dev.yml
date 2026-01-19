@@ -31,11 +31,14 @@ services:
     redis:
         image: redis:7-alpine
         container_name: lidify_dev_redis
+        environment:
+            REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+        command: ["sh", "-c", "if [ -n \"$REDIS_PASSWORD\" ]; then exec redis-server --appendonly yes --requirepass \"$REDIS_PASSWORD\"; else exec redis-server --appendonly yes; fi"]
         ports:
             - "6380:6379"
         restart: unless-stopped
         healthcheck:
-            test: ["CMD", "redis-cli", "ping"]
+            test: ["CMD-SHELL", "if [ -n \"$REDIS_PASSWORD\" ]; then redis-cli -a \"$REDIS_PASSWORD\" ping; else redis-cli ping; fi"]
             interval: 10s
             timeout: 5s
             retries: 5
@@ -47,7 +50,7 @@ services:
         container_name: lidify_audio_analyzer
         environment:
             # Connect to host machine's services (or Docker services)
-            REDIS_URL: redis://redis:6379
+            REDIS_URL: ${REDIS_URL:-redis://redis:6379}
             DATABASE_URL: postgresql://lidify:lidify@postgres:5432/lidify
             # Music path inside container (mounted from host)
             MUSIC_PATH: /music

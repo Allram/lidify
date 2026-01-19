@@ -15,7 +15,7 @@ services:
             POSTGRES_USER: ${POSTGRES_USER:-lidifydb}
             POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
             POSTGRES_DB: ${POSTGRES_DB:-lidify}
-            REDIS_URL: redis://redis:6379
+            REDIS_URL: ${REDIS_URL:-redis://redis:6379}
 
             # Server config
             PORT: 3006
@@ -122,11 +122,14 @@ services:
     redis:
         image: redis:7-alpine
         container_name: lidify_redis
+        environment:
+            REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+        command: ["sh", "-c", "if [ -n \"$REDIS_PASSWORD\" ]; then exec redis-server --appendonly yes --requirepass \"$REDIS_PASSWORD\"; else exec redis-server --appendonly yes; fi"]
         ports:
             - "${REDIS_PORT:-6379}:6379"
         restart: unless-stopped
         healthcheck:
-            test: ["CMD", "redis-cli", "ping"]
+            test: ["CMD-SHELL", "if [ -n \"$REDIS_PASSWORD\" ]; then redis-cli -a \"$REDIS_PASSWORD\" ping; else redis-cli ping; fi"]
             interval: 10s
             timeout: 5s
             retries: 5
@@ -225,7 +228,7 @@ services:
             context: ./services/audio-analyzer
         container_name: lidify_audio_analyzer
         environment:
-            REDIS_URL: redis://redis:6379
+            REDIS_URL: ${REDIS_URL:-redis://redis:6379}
             DATABASE_URL: postgresql://${POSTGRES_USER:-lidifydb}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/${POSTGRES_DB:-lidify}
             MUSIC_PATH: /music
             BATCH_SIZE: ${AUDIO_ANALYSIS_BATCH_SIZE:-10}

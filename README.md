@@ -328,6 +328,7 @@ The unified Lidify container handles most configuration automatically. Here are 
 | Variable                            | Default                            | Description                                                                 |
 | ----------------------------------- | ---------------------------------- | --------------------------------------------------------------------------- |
 | `SESSION_SECRET`                    | Auto-generated                     | Session encryption key (recommended to set for persistence across restarts) |
+| `REDIS_PASSWORD`                    | (empty)                            | Optional Redis auth password for the internal Redis instance                |
 | `SETTINGS_ENCRYPTION_KEY`           | Required                           | Encryption key for stored credentials (generate with `openssl rand -base64 32`) |
 | `TZ`                                | `UTC`                              | Timezone for the container                                                  |
 | `PORT`                              | `3030`                             | Port to access Lidify                                                       |
