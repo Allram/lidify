@@ -690,6 +690,15 @@ class ApiClient {
             method: "POST",
         });
     }
+    
+    async retryAllPendingTracks(playlistId: string) {
+        return this.request<{ success: boolean; queued: number }>(
+            `/playlists/${playlistId}/pending/retry-all`,
+            {
+                method: "POST",
+            }
+        );
+    }
 
     async removePendingTrack(playlistId: string, pendingTrackId: string) {
         return this.request<{ message: string }>(

@@ -82,6 +82,7 @@ export default function PlaylistDetailPage() {
         null
     );
     const [retryingTrackId, setRetryingTrackId] = useState<string | null>(null);
+    const [isRetryingAll, setIsRetryingAll] = useState(false);
     const [removingTrackId, setRemovingTrackId] = useState<string | null>(null);
     const previewAudioRef = useRef<HTMLAudioElement | null>(null);
 
@@ -165,6 +166,40 @@ export default function PlaylistDetailPage() {
             toast.error("Failed to retry download");
         } finally {
             setRetryingTrackId(null);
+        }
+    };
+
+    const handleRetryAllPendingTracks = async () => {
+        if (!playlist || playlist.pendingCount === 0) return;
+        setIsRetryingAll(true);
+        try {
+            const result = await api.retryAllPendingTracks(playlistId);
+            if (result.success) {
+                window.dispatchEvent(
+                    new CustomEvent("set-activity-panel-tab", {
+                        detail: { tab: "active" },
+                    })
+                );
+                window.dispatchEvent(new CustomEvent("open-activity-panel"));
+                window.dispatchEvent(new CustomEvent("notifications-changed"));
+                toast.success(
+                    `Queued ${result.queued} track${
+                        result.queued === 1 ? "" : "s"
+                    } for download`
+                );
+                setTimeout(() => {
+                    queryClient.invalidateQueries({
+                        queryKey: ["playlist", playlistId],
+                    });
+                }, 10000);
+            } else {
+                toast.error("Failed to queue pending tracks");
+            }
+        } catch (error) {
+            console.error("Failed to retry all pending tracks:", error);
+            toast.error("Failed to retry pending tracks");
+        } finally {
+            setIsRetryingAll(false);
         }
     };
 
@@ -573,6 +608,26 @@ export default function PlaylistDetailPage() {
                             {playlist.pendingCount !== 1 ? "s" : ""} failed to
                             download - will auto-import when available
                         </span>
+                        {playlist.isOwner && (
+                            <button
+                                onClick={handleRetryAllPendingTracks}
+                                disabled={isRetryingAll}
+                                className={cn(
+                                    "ml-auto flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-full transition-colors",
+                                    isRetryingAll
+                                        ? "bg-white/10 text-white/50 cursor-not-allowed"
+                                        : "bg-white/10 text-white hover:bg-white/20"
+                                )}
+                                title="Retry all pending tracks"
+                            >
+                                {isRetryingAll ? (
+                                    <Loader2 className="w-3 h-3 animate-spin" />
+                                ) : (
+                                    <RefreshCw className="w-3 h-3" />
+                                )}
+                                Retry all
+                            </button>
+                        )}
                     </div>
                 )}
 

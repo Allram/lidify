@@ -4,6 +4,7 @@ import { z } from "zod";
 import { requireAuthOrToken } from "../middleware/auth";
 import { prisma } from "../utils/db";
 import { sessionLog } from "../utils/playlistLogger";
+import pLimit from "p-limit";
 
 const router = Router();
 
@@ -95,6 +96,10 @@ router.get("/", async (req, res) => {
         logger.error("Get playlists error:", error);
         res.status(500).json({ error: "Failed to get playlists" });
     }
+        /**
+         * POST /playlists/:id/pending/retry-all
+         * Retry downloading all pending tracks for a playlist
+         */
 });
 
 // POST /playlists
