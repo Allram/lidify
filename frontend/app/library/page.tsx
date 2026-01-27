@@ -20,12 +20,18 @@ import { LibraryTabs } from "@/features/library/components/LibraryTabs";
 import { ArtistsGrid } from "@/features/library/components/ArtistsGrid";
 import { AlbumsGrid } from "@/features/library/components/AlbumsGrid";
 import { TracksList } from "@/features/library/components/TracksList";
-import { Shuffle, ListFilter } from "lucide-react";
+import { Shuffle, ListFilter, RefreshCw } from "lucide-react";
+import { useJobStatus } from "@/hooks/useJobStatus";
+import { useToast } from "@/lib/toast-context";
 
 export default function LibraryPage() {
     const router = useRouter();
     const searchParams = useSearchParams();
     const { playTracks } = useAudioControls();
+    const { toast } = useToast();
+
+    const [scanJobId, setScanJobId] = useState<string | null>(null);
+    const [lastScanTime, setLastScanTime] = useState<number>(0);
 
     // Get active tab from URL params, default to "artists"
     const activeTab = (searchParams.get("tab") as Tab) || "artists";
@@ -161,6 +167,18 @@ export default function LibraryPage() {
         }
     }, [activeTab, queryClient]);
 
+    const { isPolling } = useJobStatus(scanJobId, "scan", {
+        onComplete: async () => {
+            await reloadData();
+            setScanJobId(null);
+            toast.success("Library scan completed");
+        },
+        onError: (error) => {
+            setScanJobId(null);
+            toast.error(error || "Library scan failed");
+        },
+    });
+
     const {
         playArtist,
         playAlbum,
@@ -260,6 +278,25 @@ export default function LibraryPage() {
         }
     }, [formatTracksForAudio, playTracks]);
 
+    const handleScanLibrary = useCallback(async () => {
+        if (isPolling) return;
+
+        const now = Date.now();
+        if (now - lastScanTime < 5000) {
+            return;
+        }
+
+        try {
+            setLastScanTime(now);
+            const response = await api.scanLibrary();
+            setScanJobId(response.jobId);
+            toast.success("Library scan started");
+        } catch (error) {
+            console.error("Failed to trigger library scan:", error);
+            toast.error("Failed to start library scan");
+        }
+    }, [isPolling, lastScanTime, toast]);
+
     // Handle delete confirmation
     const handleDelete = useCallback(async () => {
         try {
@@ -337,6 +374,20 @@ export default function LibraryPage() {
                             title="Shuffle Library"
                         >
                             <Shuffle className="w-4 h-4" />
+                        </button>
+
+                        {/* Scan Button */}
+                        <button
+                            onClick={handleScanLibrary}
+                            disabled={isPolling}
+                            className={`flex items-center justify-center w-8 h-8 rounded-full transition-all ${
+                                isPolling ?
+                                    "bg-white/10 text-gray-400 cursor-not-allowed"
+                                :   "bg-white/5 text-gray-300 hover:text-white hover:bg-white/10"
+                            }`}
+                            title={isPolling ? "Library scan in progress" : "Scan Library"}
+                        >
+                            <RefreshCw className={`w-4 h-4 ${isPolling ? "animate-spin" : ""}`} />
                         </button>
 
                         {/* Filter Toggle */}
