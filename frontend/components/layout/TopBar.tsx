@@ -45,6 +45,9 @@ export function TopBar() {
             queryClient.invalidateQueries({
                 queryKey: ["enrichment-progress"],
             });
+            queryClient.invalidateQueries({ queryKey: ["library"] });
+            queryClient.invalidateQueries({ queryKey: ["playlists"] });
+            queryClient.invalidateQueries({ queryKey: ["playlist"] });
             setScanJobId(null);
         },
         onError: () => {

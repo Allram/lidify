@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { SettingsSection, SettingsRow, SettingsToggle } from "../ui";
 import { SystemSettings } from "../../types";
 import { api } from "@/lib/api";
@@ -16,8 +16,11 @@ import {
     Play,
     StopCircle,
     AlertTriangle,
+    RefreshCw,
 } from "lucide-react";
 import { EnrichmentFailuresModal } from "@/components/EnrichmentFailuresModal";
+import { useJobStatus } from "@/hooks/useJobStatus";
+import { useToast } from "@/lib/toast-context";
 
 interface CacheSectionProps {
     settings: SystemSettings;
@@ -153,7 +156,53 @@ export function CacheSection({ settings, onUpdate }: CacheSectionProps) {
     const [error, setError] = useState<string | null>(null);
     const [showFailuresModal, setShowFailuresModal] = useState(false);
     const queryClient = useQueryClient();
+    const { toast } = useToast();
     const syncStartTimeRef = useRef<number>(0);
+    const [scanJobId, setScanJobId] = useState<string | null>(null);
+    const [lastScanTime, setLastScanTime] = useState<number>(0);
+
+    const { jobStatus: scanStatus, isPolling: isScanRunning } = useJobStatus(
+        scanJobId,
+        "scan",
+        {
+            onComplete: async () => {
+                await queryClient.invalidateQueries({
+                    queryKey: ["library"],
+                });
+                await queryClient.invalidateQueries({
+                    queryKey: ["playlists"],
+                });
+                await queryClient.invalidateQueries({
+                    queryKey: ["playlist"],
+                });
+                setScanJobId(null);
+                toast.success("Library scan completed");
+            },
+            onError: (error) => {
+                setScanJobId(null);
+                toast.error(error || "Library scan failed");
+            },
+        }
+    );
+
+    const handleScanLibrary = useCallback(async () => {
+        if (isScanRunning) return;
+
+        const now = Date.now();
+        if (now - lastScanTime < 5000) {
+            return;
+        }
+
+        try {
+            setLastScanTime(now);
+            const response = await api.scanLibrary();
+            setScanJobId(response.jobId);
+            toast.success("Library scan started");
+        } catch (error) {
+            console.error("Failed to trigger library scan:", error);
+            toast.error("Failed to start library scan");
+        }
+    }, [isScanRunning, lastScanTime, toast]);
 
     // Check URL hash for auto-opening failures modal
     useEffect(() => {
@@ -747,6 +796,43 @@ export function CacheSection({ settings, onUpdate }: CacheSectionProps) {
                 </SettingsRow>
 
                 {/* Automation */}
+                <SettingsRow
+                    label="Library scan"
+                    description="Scan your music folder for new files"
+                >
+                    <div className="flex flex-col gap-2">
+                        <div className="flex items-center gap-2">
+                            <button
+                                onClick={handleScanLibrary}
+                                disabled={isScanRunning}
+                                className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-full transition-colors ${
+                                    isScanRunning
+                                        ? "bg-white/10 text-white/50 cursor-not-allowed"
+                                        : "bg-white/10 text-white hover:bg-white/20"
+                                }`}
+                            >
+                                <RefreshCw
+                                    className={`w-3 h-3 ${
+                                        isScanRunning ? "animate-spin" : ""
+                                    }`}
+                                />
+                                {isScanRunning ? "Scanning..." : "Scan now"}
+                            </button>
+                            <span className="text-xs text-white/50">
+                                {isScanRunning
+                                    ? `Progress: ${scanStatus?.progress ?? 0}%`
+                                    : "Idle"}
+                            </span>
+                        </div>
+                        {isScanRunning && (
+                            <ProgressBar
+                                progress={scanStatus?.progress ?? 0}
+                                color="bg-[#ecb200]"
+                            />
+                        )}
+                    </div>
+                </SettingsRow>
+
                 <SettingsRow
                     label="Auto sync library"
                     description="Automatically sync library changes"

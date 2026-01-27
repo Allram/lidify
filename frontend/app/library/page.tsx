@@ -170,6 +170,8 @@ export default function LibraryPage() {
     const { isPolling } = useJobStatus(scanJobId, "scan", {
         onComplete: async () => {
             await reloadData();
+            await queryClient.invalidateQueries({ queryKey: ["playlists"] });
+            await queryClient.invalidateQueries({ queryKey: ["playlist"] });
             setScanJobId(null);
             toast.success("Library scan completed");
         },
