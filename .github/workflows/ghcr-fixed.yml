@@ -10,7 +10,7 @@ permissions:
   packages: write
 
 env:
-  IMAGE_NAME: ghcr.io/${{ toLower(github.repository_owner) }}/lidify
+  IMAGE_NAME: ghcr.io/${{ lower(github.repository_owner) }}/lidify
 
 jobs:
   build:
