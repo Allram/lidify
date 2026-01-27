@@ -96,10 +96,6 @@ router.get("/", async (req, res) => {
         logger.error("Get playlists error:", error);
         res.status(500).json({ error: "Failed to get playlists" });
     }
-        /**
-         * POST /playlists/:id/pending/retry-all
-         * Retry downloading all pending tracks for a playlist
-         */
 });
 
 // POST /playlists
@@ -888,6 +884,180 @@ router.post("/:id/pending/:trackId/retry", async (req, res) => {
 
                     // Trigger a library scan to add the track and reconcile pending
                     try {
+
+                /**
+                 * POST /playlists/:id/pending/retry-all
+                 * Retry downloading all pending tracks for a playlist
+                 */
+                router.post("/:id/pending/retry-all", async (req, res) => {
+                    try {
+                        const userId = req.user!.id;
+                        const { id: playlistId } = req.params;
+
+                        const playlist = await prisma.playlist.findUnique({
+                            where: { id: playlistId },
+                        });
+
+                        if (!playlist) {
+                            return res.status(404).json({ error: "Playlist not found" });
+                        }
+
+                        if (playlist.userId !== userId) {
+                            return res.status(403).json({ error: "Access denied" });
+                        }
+
+                        const pendingTracks = await prisma.playlistPendingTrack.findMany({
+                            where: { playlistId },
+                            orderBy: { sort: "asc" },
+                        });
+
+                        if (pendingTracks.length === 0) {
+                            return res.json({ success: true, queued: 0 });
+                        }
+
+                        const { soulseekService } = await import("../services/soulseek");
+                        const { getSystemSettings } = await import("../utils/systemSettings");
+
+                        const settings = await getSystemSettings();
+                        if (!settings?.musicPath) {
+                            return res.status(400).json({ error: "Music path not configured" });
+                        }
+
+                        if (!settings?.soulseekUsername || !settings?.soulseekPassword) {
+                            return res
+                                .status(400)
+                                .json({ error: "Soulseek credentials not configured" });
+                        }
+
+                        const limit = pLimit(2);
+                        const queuedJobs: string[] = [];
+
+                        for (const pendingTrack of pendingTracks) {
+                            const retryTargetId =
+                                pendingTrack.albumMbid ||
+                                pendingTrack.artistMbid ||
+                                `pendingTrack:${pendingTrack.id}`;
+
+                            const downloadJob = await prisma.downloadJob.create({
+                                data: {
+                                    userId,
+                                    subject: `${pendingTrack.spotifyArtist} - ${pendingTrack.spotifyTitle}`,
+                                    type: "track",
+                                    targetMbid: retryTargetId,
+                                    artistMbid: pendingTrack.artistMbid,
+                                    status: "processing",
+                                    attempts: 1,
+                                    startedAt: new Date(),
+                                    metadata: {
+                                        downloadType: "pending-track-retry",
+                                        source: "soulseek",
+                                        playlistId,
+                                        pendingTrackId: pendingTrack.id,
+                                        spotifyArtist: pendingTrack.spotifyArtist,
+                                        spotifyTitle: pendingTrack.spotifyTitle,
+                                        spotifyAlbum: pendingTrack.spotifyAlbum,
+                                        albumMbid: pendingTrack.albumMbid,
+                                    },
+                                },
+                            });
+
+                            queuedJobs.push(downloadJob.id);
+
+                            void limit(async () => {
+                                try {
+                                    const albumName =
+                                        pendingTrack.spotifyAlbum !== "Unknown Album"
+                                            ? pendingTrack.spotifyAlbum
+                                            : pendingTrack.spotifyArtist;
+
+                                    const searchResult = await soulseekService.searchTrack(
+                                        pendingTrack.spotifyArtist,
+                                        pendingTrack.spotifyTitle
+                                    );
+
+                                    if (!searchResult.found || searchResult.allMatches.length === 0) {
+                                        await prisma.downloadJob.update({
+                                            where: { id: downloadJob.id },
+                                            data: {
+                                                status: "failed",
+                                                error: "No matching files found",
+                                                completedAt: new Date(),
+                                            },
+                                        });
+                                        return;
+                                    }
+
+                                    const result = await soulseekService.downloadBestMatch(
+                                        pendingTrack.spotifyArtist,
+                                        pendingTrack.spotifyTitle,
+                                        albumName,
+                                        searchResult.allMatches,
+                                        settings.musicPath
+                                    );
+
+                                    if (result.success) {
+                                        await prisma.downloadJob.update({
+                                            where: { id: downloadJob.id },
+                                            data: {
+                                                status: "completed",
+                                                completedAt: new Date(),
+                                                metadata: {
+                                                    ...(downloadJob.metadata as any),
+                                                    filePath: result.filePath,
+                                                },
+                                            },
+                                        });
+
+                                        try {
+                                            const { scanQueue } = await import("../workers/queues");
+                                            await scanQueue.add(
+                                                "scan",
+                                                {
+                                                    userId,
+                                                    source: "retry-pending-track",
+                                                    albumMbid: pendingTrack.albumMbid || undefined,
+                                                    artistMbid: pendingTrack.artistMbid || undefined,
+                                                },
+                                                {
+                                                    priority: 1,
+                                                    removeOnComplete: true,
+                                                }
+                                            );
+                                        } catch (scanError) {
+                                            logger.error(
+                                                `[Retry-All] Failed to queue scan:`,
+                                                scanError
+                                            );
+                                        }
+                                    } else {
+                                        await prisma.downloadJob.update({
+                                            where: { id: downloadJob.id },
+                                            data: {
+                                                status: "failed",
+                                                error: result.error || "Download failed",
+                                                completedAt: new Date(),
+                                            },
+                                        });
+                                    }
+                                } catch (error) {
+                                    await prisma.downloadJob.update({
+                                        where: { id: downloadJob.id },
+                                        data: {
+                                            status: "failed",
+                                            error: (error as any)?.message || "Download failed",
+                                            completedAt: new Date(),
+                                        },
+                                    });
+                                }
+                            });
+                        }
+
+                        res.json({ success: true, queued: queuedJobs.length });
+                    } catch (error) {
+                        logger.error("Retry all pending tracks error:", error);
+                        res.status(500).json({ error: "Failed to retry pending tracks" });
+                    }
+                });
                         const { scanQueue } = await import("../workers/queues");
                         const scanJob = await scanQueue.add(
                             "scan",

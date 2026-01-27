@@ -820,13 +820,13 @@ export function CacheSection({ settings, onUpdate }: CacheSectionProps) {
                             </button>
                             <span className="text-xs text-white/50">
                                 {isScanRunning
-                                    ? `Progress: ${scanStatus?.progress ?? 0}%`
+                                    ? `Progress: ${Math.min(100, Math.max(0, scanStatus?.progress ?? 0))}%`
                                     : "Idle"}
                             </span>
                         </div>
                         {isScanRunning && (
                             <ProgressBar
-                                progress={scanStatus?.progress ?? 0}
+                                progress={Math.min(100, Math.max(0, scanStatus?.progress ?? 0))}
                                 color="bg-[#ecb200]"
                             />
                         )}
