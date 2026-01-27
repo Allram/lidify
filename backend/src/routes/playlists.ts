@@ -16,179 +16,6 @@ const createPlaylistSchema = z.object({
 });
 
 const addTrackSchema = z.object({
-    trackId: z.string(),
-});
-
-// GET /playlists
-router.get("/", async (req, res) => {
-    try {
-        if (!req.user) {
-            return res.status(401).json({ error: "Unauthorized" });
-        }
-        const userId = req.user.id;
-
-        // Get user's hidden playlists
-        const hiddenPlaylists = await prisma.hiddenPlaylist.findMany({
-            where: { userId },
-            select: { playlistId: true },
-        });
-        const hiddenPlaylistIds = new Set(
-            hiddenPlaylists.map((h) => h.playlistId)
-        );
-
-        const playlists = await prisma.playlist.findMany({
-            where: {
-                OR: [{ userId }, { isPublic: true }],
-            },
-            orderBy: { createdAt: "desc" },
-            include: {
-                user: {
-                    select: {
-                        username: true,
-                    },
-                },
-                items: {
-                    include: {
-                        track: {
-                            include: {
-                                album: {
-                                    include: {
-                                        artist: {
-                                            select: {
-                                                id: true,
-                                                name: true,
-                                            },
-                                        },
-                                    },
-                                },
-                            },
-                        },
-                    },
-                    orderBy: { sort: "asc" },
-                },
-            },
-        });
-
-        const playlistsWithCounts = playlists.map((playlist) => ({
-            ...playlist,
-            trackCount: playlist.items.length,
-            isOwner: playlist.userId === userId,
-            isHidden: hiddenPlaylistIds.has(playlist.id),
-        }));
-
-        // Debug: log shared playlists with user info
-        const sharedPlaylists = playlistsWithCounts.filter((p) => !p.isOwner);
-        if (sharedPlaylists.length > 0) {
-            logger.debug(
-                `[Playlists] Found ${sharedPlaylists.length} shared playlists for user ${userId}:`
-            );
-            sharedPlaylists.forEach((p) => {
-                logger.debug(
-                    `  - "${p.name}" by ${
-                        p.user?.username || "UNKNOWN"
-                    } (owner: ${p.userId})`
-                );
-            });
-        }
-
-        res.json(playlistsWithCounts);
-    } catch (error) {
-        logger.error("Get playlists error:", error);
-        res.status(500).json({ error: "Failed to get playlists" });
-    }
-});
-
-// POST /playlists
-router.post("/", async (req, res) => {
-    try {
-        if (!req.user) {
-            return res.status(401).json({ error: "Unauthorized" });
-        }
-        const userId = req.user.id;
-        const data = createPlaylistSchema.parse(req.body);
-
-        const playlist = await prisma.playlist.create({
-            data: {
-                userId,
-                name: data.name,
-                isPublic: data.isPublic,
-            },
-        });
-
-        res.json(playlist);
-    } catch (error) {
-        if (error instanceof z.ZodError) {
-            return res
-                .status(400)
-                .json({ error: "Invalid request", details: error.errors });
-        }
-        logger.error("Create playlist error:", error);
-        res.status(500).json({ error: "Failed to create playlist" });
-    }
-});
-
-// GET /playlists/:id
-router.get("/:id", async (req, res) => {
-    try {
-        if (!req.user) {
-            return res.status(401).json({ error: "Unauthorized" });
-        }
-        const userId = req.user.id;
-
-        const playlist = await prisma.playlist.findUnique({
-            where: { id: req.params.id },
-            include: {
-                user: {
-                    select: {
-                        username: true,
-                    },
-                },
-                hiddenByUsers: {
-                    where: { userId },
-                    select: { id: true },
-                },
-                items: {
-                    include: {
-                        track: {
-                            include: {
-                                album: {
-                                    include: {
-                                        artist: {
-                                            select: {
-                                                id: true,
-                                                name: true,
-                                                mbid: true,
-                                            },
-                                        },
-                                    },
-                                },
-                            },
-                        },
-                    },
-                    orderBy: { sort: "asc" },
-                },
-                pendingTracks: {
-                    orderBy: { sort: "asc" },
-                },
-            },
-        });
-
-        if (!playlist) {
-            return res.status(404).json({ error: "Playlist not found" });
-        }
-
-        // Check access permissions
-        if (!playlist.isPublic && playlist.userId !== userId) {
-            return res.status(403).json({ error: "Access denied" });
-        }
-
-        // Format playlist items
-        const formattedItems = playlist.items.map((item) => ({
-            ...item,
-            type: "track" as const,
-            track: {
-                ...item.track,
-                album: {
                     ...item.track.album,
                     coverArt: item.track.album.coverUrl,
                 },
@@ -1143,6 +970,180 @@ router.post("/:id/pending/:trackId/retry", async (req, res) => {
             error: "Failed to retry download",
             details: error.message,
         });
+    }
+});
+
+/**
+ * POST /playlists/:id/pending/retry-all
+ * Retry downloading all pending tracks for a playlist
+ */
+router.post(":id/pending/retry-all", async (req, res) => {
+    try {
+        const userId = req.user!.id;
+        const { id: playlistId } = req.params;
+
+        const playlist = await prisma.playlist.findUnique({
+            where: { id: playlistId },
+        });
+
+        if (!playlist) {
+            return res.status(404).json({ error: "Playlist not found" });
+        }
+
+        if (playlist.userId !== userId) {
+            return res.status(403).json({ error: "Access denied" });
+        }
+
+        const pendingTracks = await prisma.playlistPendingTrack.findMany({
+            where: { playlistId },
+            orderBy: { sort: "asc" },
+        });
+
+        if (pendingTracks.length === 0) {
+            return res.json({ success: true, queued: 0 });
+        }
+
+        const { soulseekService } = await import("../services/soulseek");
+        const { getSystemSettings } = await import("../utils/systemSettings");
+
+        const settings = await getSystemSettings();
+        if (!settings?.musicPath) {
+            return res.status(400).json({ error: "Music path not configured" });
+        }
+
+        if (!settings?.soulseekUsername || !settings?.soulseekPassword) {
+            return res
+                .status(400)
+                .json({ error: "Soulseek credentials not configured" });
+        }
+
+        const limit = pLimit(2);
+        const queuedJobs: string[] = [];
+
+        for (const pendingTrack of pendingTracks) {
+            const retryTargetId =
+                pendingTrack.albumMbid ||
+                pendingTrack.artistMbid ||
+                `pendingTrack:${pendingTrack.id}`;
+
+            const downloadJob = await prisma.downloadJob.create({
+                data: {
+                    userId,
+                    subject: `${pendingTrack.spotifyArtist} - ${pendingTrack.spotifyTitle}`,
+                    type: "track",
+                    targetMbid: retryTargetId,
+                    artistMbid: pendingTrack.artistMbid,
+                    status: "processing",
+                    attempts: 1,
+                    startedAt: new Date(),
+                    metadata: {
+                        downloadType: "pending-track-retry",
+                        source: "soulseek",
+                        playlistId,
+                        pendingTrackId: pendingTrack.id,
+                        spotifyArtist: pendingTrack.spotifyArtist,
+                        spotifyTitle: pendingTrack.spotifyTitle,
+                        spotifyAlbum: pendingTrack.spotifyAlbum,
+                        albumMbid: pendingTrack.albumMbid,
+                    },
+                },
+            });
+
+            queuedJobs.push(downloadJob.id);
+
+            void limit(async () => {
+                try {
+                    const albumName =
+                        pendingTrack.spotifyAlbum !== "Unknown Album"
+                            ? pendingTrack.spotifyAlbum
+                            : pendingTrack.spotifyArtist;
+
+                    const searchResult = await soulseekService.searchTrack(
+                        pendingTrack.spotifyArtist,
+                        pendingTrack.spotifyTitle
+                    );
+
+                    if (!searchResult.found || searchResult.allMatches.length === 0) {
+                        await prisma.downloadJob.update({
+                            where: { id: downloadJob.id },
+                            data: {
+                                status: "failed",
+                                error: "No matching files found",
+                                completedAt: new Date(),
+                            },
+                        });
+                        return;
+                    }
+
+                    const result = await soulseekService.downloadBestMatch(
+                        pendingTrack.spotifyArtist,
+                        pendingTrack.spotifyTitle,
+                        albumName,
+                        searchResult.allMatches,
+                        settings.musicPath
+                    );
+
+                    if (result.success) {
+                        await prisma.downloadJob.update({
+                            where: { id: downloadJob.id },
+                            data: {
+                                status: "completed",
+                                completedAt: new Date(),
+                                metadata: {
+                                    ...(downloadJob.metadata as any),
+                                    filePath: result.filePath,
+                                },
+                            },
+                        });
+
+                        try {
+                            const { scanQueue } = await import("../workers/queues");
+                            await scanQueue.add(
+                                "scan",
+                                {
+                                    userId,
+                                    source: "retry-pending-track",
+                                    albumMbid: pendingTrack.albumMbid || undefined,
+                                    artistMbid: pendingTrack.artistMbid || undefined,
+                                },
+                                {
+                                    priority: 1,
+                                    removeOnComplete: true,
+                                }
+                            );
+                        } catch (scanError) {
+                            logger.error(
+                                `[Retry-All] Failed to queue scan:`,
+                                scanError
+                            );
+                        }
+                    } else {
+                        await prisma.downloadJob.update({
+                            where: { id: downloadJob.id },
+                            data: {
+                                status: "failed",
+                                error: result.error || "Download failed",
+                                completedAt: new Date(),
+                            },
+                        });
+                    }
+                } catch (error) {
+                    await prisma.downloadJob.update({
+                        where: { id: downloadJob.id },
+                        data: {
+                            status: "failed",
+                            error: (error as any)?.message || "Download failed",
+                            completedAt: new Date(),
+                        },
+                    });
+                }
+            });
+        }
+
+        res.json({ success: true, queued: queuedJobs.length });
+    } catch (error) {
+        logger.error("Retry all pending tracks error:", error);
+        res.status(500).json({ error: "Failed to retry pending tracks" });
     }
 });
 
