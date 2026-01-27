@@ -403,14 +403,17 @@ router.get("/recently-listened", async (req, res) => {
         const artistIds = limitedItems
             .filter((item) => item.type === "artist")
             .map((item) => item.id);
-        const albumCounts = await prisma.ownedAlbum.groupBy({
-            by: ["artistId"],
-            where: { artistId: { in: artistIds } },
-            _count: { rgMbid: true },
-        });
-        const albumCountMap = new Map(
-            albumCounts.map((ac) => [ac.artistId, ac._count.rgMbid])
-        );
+        const albumCountMap = new Map<string, number>();
+        if (artistIds.length > 0) {
+            const albumCounts = await prisma.ownedAlbum.groupBy({
+                by: ["artistId"],
+                where: { artistId: { in: artistIds } },
+                _count: { rgMbid: true },
+            });
+            for (const ac of albumCounts) {
+                albumCountMap.set(ac.artistId, ac._count.rgMbid);
+            }
+        }
 
         // Map results - no on-demand image fetching for performance
         // Artists without images will show placeholders until enrichment completes
@@ -474,18 +477,21 @@ router.get("/recently-added", async (req, res) => {
 
         // Get album counts for each artist (only LIBRARY albums)
         const artistIds = Array.from(artistsMap.keys());
-        const albumCounts = await prisma.album.groupBy({
-            by: ["artistId"],
-            where: {
-                artistId: { in: artistIds },
-                location: "LIBRARY",
-                tracks: { some: {} },
-            },
-            _count: { id: true },
-        });
-        const albumCountMap = new Map(
-            albumCounts.map((ac) => [ac.artistId, ac._count.id])
-        );
+        const albumCountMap = new Map<string, number>();
+        if (artistIds.length > 0) {
+            const albumCounts = await prisma.album.groupBy({
+                by: ["artistId"],
+                where: {
+                    artistId: { in: artistIds },
+                    location: "LIBRARY",
+                    tracks: { some: {} },
+                },
+                _count: { id: true },
+            });
+            for (const ac of albumCounts) {
+                albumCountMap.set(ac.artistId, ac._count.id);
+            }
+        }
 
         // Map results - no on-demand image fetching for performance
         // Artists without images will show placeholders until enrichment completes
@@ -854,7 +860,11 @@ router.get("/artists/:id", async (req, res) => {
                     },
                 },
             },
-            ownedAlbums: true,
+            ownedAlbums: {
+                select: {
+                    rgMbid: true,
+                },
+            },
             // Note: similarFrom (FK-based) is no longer used for display
             // We now use similarArtistsJson which is fetched by default
         };
@@ -1116,19 +1126,22 @@ router.get("/artists/:id", async (req, res) => {
         // Get user play counts for all tracks
         const userId = req.user!.id;
         const trackIds = allTracks.map((t) => t.id);
-        const userPlays = await prisma.play.groupBy({
-            by: ["trackId"],
-            where: {
-                userId,
-                trackId: { in: trackIds },
-            },
-            _count: {
-                id: true,
-            },
-        });
-        const userPlayCounts = new Map(
-            userPlays.map((p) => [p.trackId, p._count.id])
-        );
+        const userPlayCounts = new Map<string, number>();
+        if (trackIds.length > 0) {
+            const userPlays = await prisma.play.groupBy({
+                by: ["trackId"],
+                where: {
+                    userId,
+                    trackId: { in: trackIds },
+                },
+                _count: {
+                    id: true,
+                },
+            });
+            for (const play of userPlays) {
+                userPlayCounts.set(play.trackId, play._count.id);
+            }
+        }
 
         // Fetch Last.fm top tracks (cached for 24 hours)
         const topTracksCacheKey = `top-tracks:${artist.id}`;
@@ -1164,13 +1177,22 @@ router.get("/artists/:id", async (req, res) => {
                 );
             }
 
+            // Build a quick lookup to avoid O(n*m) matching by title
+            const trackByTitle = new Map<string, (typeof allTracks)[number]>();
+            for (const track of allTracks) {
+                const key = track.title.toLowerCase();
+                if (!trackByTitle.has(key)) {
+                    trackByTitle.set(key, track);
+                }
+            }
+
             // For each Last.fm track, try to match with library track or add as unowned
             const combinedTracks: any[] = [];
 
             for (const lfmTrack of lastfmTopTracks) {
                 // Try to find matching track in library
-                const matchedTrack = allTracks.find(
-                    (t) => t.title.toLowerCase() === lfmTrack.name.toLowerCase()
+                const matchedTrack = trackByTitle.get(
+                    lfmTrack.name.toLowerCase()
                 );
 
                 if (matchedTrack) {
@@ -1440,9 +1462,22 @@ router.get("/artists/:id", async (req, res) => {
 
                             if (!image) {
                                 try {
-                                    image = await deezerService.getArtistImage(
-                                        s.name
-                                    );
+                                    const cacheKey = `deezer-artist-image:${s.name}`;
+                                    const cached = await redisClient.get(cacheKey);
+                                    if (cached && cached !== "NOT_FOUND") {
+                                        image = cached;
+                                    } else {
+                                        image = await deezerService.getArtistImage(
+                                            s.name
+                                        );
+                                        if (image) {
+                                            await redisClient.setEx(
+                                                cacheKey,
+                                                24 * 60 * 60,
+                                                image
+                                            );
+                                        }
+                                    }
                                 } catch (err) {
                                     // Deezer failed, leave null
                                 }
@@ -1679,9 +1714,17 @@ router.get("/tracks", async (req, res) => {
                 skip: offset,
                 take: limit,
                 orderBy: albumId ? { trackNo: "asc" } : { id: "desc" },
-                include: {
+                select: {
+                    id: true,
+                    title: true,
+                    displayTitle: true,
+                    duration: true,
+                    trackNo: true,
                     album: {
-                        include: {
+                        select: {
+                            id: true,
+                            title: true,
+                            coverUrl: true,
                             artist: {
                                 select: {
                                     id: true,
@@ -1728,14 +1771,22 @@ router.get("/tracks/shuffle", async (req, res) => {
         }
 
         // For small libraries, fetch all and shuffle in memory
-        // For large libraries, use database-level randomization for memory efficiency
+        // For large libraries, use offset sampling (faster than ORDER BY RANDOM)
         let tracksData;
         if (totalTracks <= limit) {
             // Fetch all tracks and shuffle
             tracksData = await prisma.track.findMany({
-                include: {
+                select: {
+                    id: true,
+                    title: true,
+                    displayTitle: true,
+                    duration: true,
+                    trackNo: true,
                     album: {
-                        include: {
+                        select: {
+                            id: true,
+                            title: true,
+                            coverUrl: true,
                             artist: {
                                 select: {
                                     id: true,
@@ -1752,22 +1803,25 @@ router.get("/tracks/shuffle", async (req, res) => {
                 [tracksData[i], tracksData[j]] = [tracksData[j], tracksData[i]];
             }
         } else {
-            // For large libraries, use database-level randomization
-            // Get random track IDs first (efficient, O(limit) memory)
-            const randomIds = await prisma.$queryRaw<{ id: string }[]>`
-                SELECT id FROM "Track"
-                ORDER BY RANDOM()
-                LIMIT ${limit}
-            `;
+            const safeLimit = Math.min(limit, totalTracks);
+            const maxOffset = Math.max(totalTracks - safeLimit, 0);
+            const randomOffset = maxOffset > 0 ? Math.floor(Math.random() * (maxOffset + 1)) : 0;
 
-            // Then fetch full track data for selected IDs
             tracksData = await prisma.track.findMany({
-                where: {
-                    id: { in: randomIds.map((r) => r.id) },
-                },
-                include: {
+                skip: randomOffset,
+                take: safeLimit,
+                orderBy: { id: "asc" },
+                select: {
+                    id: true,
+                    title: true,
+                    displayTitle: true,
+                    duration: true,
+                    trackNo: true,
                     album: {
-                        include: {
+                        select: {
+                            id: true,
+                            title: true,
+                            coverUrl: true,
                             artist: {
                                 select: {
                                     id: true,
@@ -1779,7 +1833,7 @@ router.get("/tracks/shuffle", async (req, res) => {
                 },
             });
 
-            // Shuffle the result to maintain randomness (findMany doesn't preserve order)
+            // Shuffle to avoid predictable ordering within the sampled window
             for (let i = tracksData.length - 1; i > 0; i--) {
                 const j = Math.floor(Math.random() * (i + 1));
                 [tracksData[i], tracksData[j]] = [tracksData[j], tracksData[i]];

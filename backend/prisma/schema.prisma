@@ -335,6 +335,7 @@ model Play {
   track Track @relation(fields: [trackId], references: [id], onDelete: Cascade)
 
   @@index([userId, playedAt])
+  @@index([userId, trackId])
   @@index([trackId])
   @@index([source])
 }
@@ -512,6 +513,7 @@ model DownloadJob {
   @@index([lidarrRef])
   @@index([artistMbid])
   @@index([targetMbid])
+  @@index([status, completedAt])
 }
 
 model ListeningState {
@@ -551,6 +553,7 @@ model DiscoveryAlbum {
 
   @@unique([userId, weekStartDate, rgMbid])
   @@index([userId, weekStartDate])
+  @@index([userId, weekStartDate, status])
   @@index([downloadedAt])
   @@index([status])
 }
@@ -874,6 +877,7 @@ model UnavailableAlbum {
   @@unique([userId, weekStartDate, albumMbid])
   @@index([userId, weekStartDate])
   @@index([userId, weekStartDate, attemptNumber])
+  @@index([userId, weekStartDate, originalAlbumId, attemptNumber])
   @@index([originalAlbumId])
 }
 
@@ -896,6 +900,7 @@ model DiscoveryBatch {
   jobs DownloadJob[]
 
   @@index([userId, weekStart])
+  @@index([userId, status, createdAt])
   @@index([status])
   @@index([createdAt])
 }

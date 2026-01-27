@@ -467,6 +467,8 @@ export function useLibraryAlbumsInfiniteQuery(
         },
         initialPageParam: 1,
         enabled,
+        structuralSharing: true,
+        placeholderData: (previousData) => previousData,
     });
 }
 
@@ -529,6 +531,8 @@ export function useLibraryAlbumsQuery({
         }),
         staleTime: 2 * 60 * 1000,
         enabled,
+        structuralSharing: true,
+        placeholderData: (previousData) => previousData,
     });
 }
 
@@ -563,6 +567,8 @@ export function useLibraryTracksInfiniteQuery(
         },
         initialPageParam: 1,
         enabled,
+        structuralSharing: true,
+        placeholderData: (previousData) => previousData,
     });
 }
 
@@ -589,6 +595,8 @@ export function useLibraryTracksQuery({
         }),
         staleTime: 2 * 60 * 1000,
         enabled,
+        structuralSharing: true,
+        placeholderData: (previousData) => previousData,
     });
 }
 

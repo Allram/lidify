@@ -1,6 +1,7 @@
 "use client";
 
 import { Play, Pause } from "lucide-react";
+import { useMemo, useCallback } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { useAudio } from "@/lib/audio-context";
@@ -16,28 +17,39 @@ interface LibraryTracksListProps {
 export function LibraryTracksList({ tracks }: LibraryTracksListProps) {
     const { currentTrack, isPlaying, playTracks, pause, resume } = useAudio();
 
+    const formattedTracks = useMemo(
+        () =>
+            tracks.map((t) => ({
+                id: t.id,
+                title: t.title,
+                displayTitle: t.displayTitle,
+                duration: t.duration,
+                artist: {
+                    id: t.album.artist.id,
+                    name: t.album.artist.name,
+                },
+                album: {
+                    id: t.album.id,
+                    title: t.album.title,
+                    coverArt: t.album.coverUrl,
+                },
+            })),
+        [tracks]
+    );
+
+    const indexById = useMemo(() => {
+        const map = new Map<string, number>();
+        for (let i = 0; i < formattedTracks.length; i += 1) {
+            map.set(formattedTracks[i].id, i);
+        }
+        return map;
+    }, [formattedTracks]);
+
     if (!tracks || tracks.length === 0) {
         return null;
     }
 
-    const handlePlayTrack = (track: LibraryTrack, index: number) => {
-        // Format tracks for playback
-        const formattedTracks = tracks.map((t) => ({
-            id: t.id,
-            title: t.title,
-            displayTitle: t.displayTitle,
-            duration: t.duration,
-            artist: {
-                id: t.album.artist.id,
-                name: t.album.artist.name,
-            },
-            album: {
-                id: t.album.id,
-                title: t.album.title,
-                coverArt: t.album.coverUrl,
-            },
-        }));
-
+    const handlePlayTrack = useCallback((track: LibraryTrack) => {
         if (currentTrack?.id === track.id) {
             // Toggle play/pause if clicking the same track
             if (isPlaying) {
@@ -47,9 +59,10 @@ export function LibraryTracksList({ tracks }: LibraryTracksListProps) {
             }
         } else {
             // Play from this track
-            playTracks(formattedTracks, index);
+            const startIndex = indexById.get(track.id) ?? 0;
+            playTracks(formattedTracks, startIndex);
         }
-    };
+    }, [currentTrack?.id, isPlaying, pause, resume, playTracks, formattedTracks, indexById]);
 
     return (
         <div className="space-y-1">
@@ -70,7 +83,7 @@ export function LibraryTracksList({ tracks }: LibraryTracksListProps) {
                     >
                         {/* Play Button / Track Number */}
                         <button
-                            onClick={() => handlePlayTrack(track, index)}
+                            onClick={() => handlePlayTrack(track)}
                             className="w-8 h-8 flex items-center justify-center flex-shrink-0"
                         >
                             {isPlayingThis ? (

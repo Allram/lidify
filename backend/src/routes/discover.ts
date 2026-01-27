@@ -3,6 +3,7 @@ import { logger } from "../utils/logger";
 import { requireAuthOrToken } from "../middleware/auth";
 import { prisma } from "../utils/db";
 import { lastFmService } from "../services/lastfm";
+import { Prisma } from "@prisma/client";
 import { startOfWeek, endOfWeek } from "date-fns";
 import axios from "axios";
 import fs from "fs";
@@ -149,8 +150,20 @@ router.get("/current", async (req, res) => {
                 weekStartDate: weekStart,
                 status: { in: ["ACTIVE", "LIKED"] },
             },
-            include: {
-                tracks: true, // DiscoveryTrack records (trackId is just a string, not a relation)
+            select: {
+                id: true,
+                rgMbid: true,
+                artistName: true,
+                albumTitle: true,
+                status: true,
+                likedAt: true,
+                similarity: true,
+                tier: true,
+                tracks: {
+                    select: {
+                        trackId: true,
+                    },
+                },
             },
             orderBy: { downloadedAt: "asc" },
         });
@@ -161,6 +174,19 @@ router.get("/current", async (req, res) => {
                 userId,
                 weekStartDate: weekStart,
             },
+            select: {
+                id: true,
+                artistName: true,
+                albumTitle: true,
+                albumMbid: true,
+                similarity: true,
+                tier: true,
+                previewUrl: true,
+                deezerTrackId: true,
+                deezerAlbumId: true,
+                attemptNumber: true,
+                originalAlbumId: true,
+            },
             orderBy: [
                 { originalAlbumId: "asc" }, // Group by original album
                 { attemptNumber: "asc" }, // Then sort by attempt number
@@ -168,95 +194,137 @@ router.get("/current", async (req, res) => {
         });
 
         // Build track list from DiscoveryTrack records (the actual selected tracks)
-        const tracks = [];
+        const tracks = [] as any[];
+
+        // Batch fetch all track IDs once
+        const allDiscoveryTrackIds = discoveryAlbums
+            .flatMap((da) => da.tracks?.map((dt) => dt.trackId) ?? [])
+            .filter((id): id is string => id !== null);
+
+        const trackMap = new Map<string, any>();
+        if (allDiscoveryTrackIds.length > 0) {
+            const libraryTracks = await prisma.track.findMany({
+                where: { id: { in: allDiscoveryTrackIds } },
+                include: { album: { include: { artist: true } } },
+            });
+            for (const t of libraryTracks) {
+                trackMap.set(t.id, t);
+            }
+        }
+
+        const albumsWithTracks = new Set<string>();
+        const missingAlbums: Array<{
+            key: string;
+            artistName: string;
+            albumTitle: string;
+            rgMbid: string;
+            status: string;
+            likedAt: Date | null;
+            similarity: number | null;
+            tier: string | null;
+            id: string;
+        }> = [];
 
         for (const discoveryAlbum of discoveryAlbums) {
-            // If we have DiscoveryTrack records, use them (the actual selected tracks)
+            let addedTrack = false;
+
             if (discoveryAlbum.tracks && discoveryAlbum.tracks.length > 0) {
-                // Fetch all tracks in one query using their IDs
-                const trackIds = discoveryAlbum.tracks
-                    .map((dt) => dt.trackId)
-                    .filter((id): id is string => id !== null);
-
-                if (trackIds.length > 0) {
-                    const libraryTracks = await prisma.track.findMany({
-                        where: { id: { in: trackIds } },
-                        include: { album: { include: { artist: true } } },
-                    });
-
-                    // Create a map for quick lookup
-                    const trackMap = new Map(
-                        libraryTracks.map((t) => [t.id, t])
-                    );
-
-                    for (const dt of discoveryAlbum.tracks) {
-                        const track = dt.trackId
-                            ? trackMap.get(dt.trackId)
-                            : null;
-                        if (track) {
-                            tracks.push({
-                                id: track.id,
-                                title: track.title,
-                                artist: discoveryAlbum.artistName,
-                                album: discoveryAlbum.albumTitle,
-                                albumId: discoveryAlbum.rgMbid,
-                                isLiked: discoveryAlbum.status === "LIKED",
-                                likedAt: discoveryAlbum.likedAt,
-                                similarity: discoveryAlbum.similarity,
-                                tier: discoveryAlbum.tier,
-                                coverUrl: track.album?.coverUrl,
-                                available: true,
-                                duration: track.duration,
-                            });
-                        }
+                for (const dt of discoveryAlbum.tracks) {
+                    const track = dt.trackId ? trackMap.get(dt.trackId) : null;
+                    if (track) {
+                        tracks.push({
+                            id: track.id,
+                            title: track.title,
+                            artist: discoveryAlbum.artistName,
+                            album: discoveryAlbum.albumTitle,
+                            albumId: discoveryAlbum.rgMbid,
+                            isLiked: discoveryAlbum.status === "LIKED",
+                            likedAt: discoveryAlbum.likedAt,
+                            similarity: discoveryAlbum.similarity,
+                            tier: discoveryAlbum.tier,
+                            coverUrl: track.album?.coverUrl,
+                            available: true,
+                            duration: track.duration,
+                        });
+                        addedTrack = true;
                     }
                 }
             }
 
-            // Fallback: No DiscoveryTrack records or no valid trackIds, find ONE track from library
-            if (
-                tracks.filter((t) => t.album === discoveryAlbum.albumTitle)
-                    .length === 0
-            ) {
-                const album = await prisma.album.findFirst({
-                    where: {
-                        title: discoveryAlbum.albumTitle,
-                        artist: { name: discoveryAlbum.artistName },
-                    },
-                    include: {
-                        artist: true,
-                        tracks: { take: 1, orderBy: { trackNo: "asc" } },
-                    },
-                });
+            if (addedTrack) {
+                albumsWithTracks.add(
+                    `${discoveryAlbum.artistName}::${discoveryAlbum.albumTitle}`
+                );
+                continue;
+            }
 
+            missingAlbums.push({
+                key: `${discoveryAlbum.artistName}::${discoveryAlbum.albumTitle}`,
+                artistName: discoveryAlbum.artistName,
+                albumTitle: discoveryAlbum.albumTitle,
+                rgMbid: discoveryAlbum.rgMbid,
+                status: discoveryAlbum.status,
+                likedAt: discoveryAlbum.likedAt,
+                similarity: discoveryAlbum.similarity,
+                tier: discoveryAlbum.tier,
+                id: discoveryAlbum.id,
+            });
+        }
+
+        if (missingAlbums.length > 0) {
+            const albumMatches = await prisma.album.findMany({
+                where: {
+                    OR: missingAlbums.map((ma) => ({
+                        title: ma.albumTitle,
+                        artist: { name: ma.artistName },
+                    })),
+                },
+                include: {
+                    artist: true,
+                    tracks: { take: 1, orderBy: { trackNo: "asc" } },
+                },
+            });
+
+            const albumMap = new Map(
+                albumMatches.map((a) => [
+                    `${a.artist.name}::${a.title}`,
+                    a,
+                ])
+            );
+
+            for (const missing of missingAlbums) {
+                if (albumsWithTracks.has(missing.key)) {
+                    continue;
+                }
+
+                const album = albumMap.get(missing.key);
                 if (album && album.tracks.length > 0) {
                     const track = album.tracks[0];
                     tracks.push({
                         id: track.id,
                         title: track.title,
-                        artist: discoveryAlbum.artistName,
-                        album: discoveryAlbum.albumTitle,
-                        albumId: discoveryAlbum.rgMbid,
-                        isLiked: discoveryAlbum.status === "LIKED",
-                        likedAt: discoveryAlbum.likedAt,
-                        similarity: discoveryAlbum.similarity,
-                        tier: discoveryAlbum.tier,
+                        artist: missing.artistName,
+                        album: missing.albumTitle,
+                        albumId: missing.rgMbid,
+                        isLiked: missing.status === "LIKED",
+                        likedAt: missing.likedAt,
+                        similarity: missing.similarity,
+                        tier: missing.tier,
                         coverUrl: album.coverUrl,
                         available: true,
                         duration: track.duration,
                     });
                 } else {
-                    // Album not in library yet (downloading/pending)
                     tracks.push({
-                        id: `pending-${discoveryAlbum.id}`,
-                        title: `${discoveryAlbum.albumTitle} (pending import)`,
-                        artist: discoveryAlbum.artistName,
-                        album: discoveryAlbum.albumTitle,
-                        albumId: discoveryAlbum.rgMbid,
-                        isLiked: discoveryAlbum.status === "LIKED",
-                        likedAt: discoveryAlbum.likedAt,
-                        similarity: discoveryAlbum.similarity,
-                        tier: discoveryAlbum.tier,
+                        id: `pending-${missing.id}`,
+                        title: `${missing.albumTitle} (pending import)`,
+                        artist: missing.artistName,
+                        album: missing.albumTitle,
+                        albumId: missing.rgMbid,
+                        isLiked: missing.status === "LIKED",
+                        likedAt: missing.likedAt,
+                        similarity: missing.similarity,
+                        tier: missing.tier,
                         coverUrl: null,
                         available: false,
                         isPending: true,
@@ -272,47 +340,81 @@ router.get("/current", async (req, res) => {
         // Filter unavailable albums:
         // 1. Remove albums that successfully downloaded (have DiscoveryAlbum record)
         // 2. Remove albums that the user now owns (in Album table)
-        const filteredUnavailable: typeof unavailableAlbums = [];
-        for (const album of unavailableAlbums) {
-            // Skip if this album successfully downloaded this week
-            if (successfulMbids.has(album.albumMbid)) {
-                continue;
-            }
-
-            // Skip if album exists in user's library by artist+title (normalized match)
-            const normalizedArtist = album.artistName.toLowerCase().trim();
-            const normalizedAlbum = album.albumTitle
+        const normalizeArtist = (value: string) => value.toLowerCase().trim();
+        const normalizeAlbum = (value: string) =>
+            value
                 .toLowerCase()
-                .replace(/\(.*?\)/g, "") // Remove parenthetical content
-                .replace(/\[.*?\]/g, "") // Remove bracketed content
+                .replace(/\(.*?\)/g, "")
+                .replace(/\[.*?\]/g, "")
                 .trim();
 
-            const existsInLibrary = await prisma.album.findFirst({
+        const candidateUnavailable = unavailableAlbums.filter(
+            (album) => !successfulMbids.has(album.albumMbid)
+        );
+
+        const normalizedPairs = candidateUnavailable.map((album) => ({
+            artist: normalizeArtist(album.artistName),
+            title: normalizeAlbum(album.albumTitle),
+        }));
+
+        const mbidsToCheck = Array.from(
+            new Set(candidateUnavailable.map((album) => album.albumMbid))
+        );
+
+        const albumMatches = candidateUnavailable.length === 0 ? [] :
+            await prisma.album.findMany({
                 where: {
                     OR: [
-                        { rgMbid: album.albumMbid },
-                        {
+                        ...(mbidsToCheck.length > 0
+                            ? [{ rgMbid: { in: mbidsToCheck } }]
+                            : []),
+                        ...normalizedPairs.map((pair) => ({
                             title: {
-                                contains: normalizedAlbum,
-                                mode: "insensitive",
+                                contains: pair.title,
+                                mode: Prisma.QueryMode.insensitive,
                             },
                             artist: {
                                 name: {
-                                    contains: normalizedArtist,
-                                    mode: "insensitive",
+                                    contains: pair.artist,
+                                    mode: Prisma.QueryMode.insensitive,
                                 },
                             },
-                        },
+                        })),
                     ],
+                },
+                select: {
+                    rgMbid: true,
+                    title: true,
+                    artist: {
+                        select: {
+                            name: true,
+                        },
+                    },
                 },
             });
 
-            if (existsInLibrary) {
-                continue; // User already owns this album, don't show as unavailable
+        const ownedByMbid = new Set(
+            albumMatches.map((album) => album.rgMbid).filter(Boolean)
+        );
+        const ownedByKey = new Set(
+            albumMatches.map(
+                (album) =>
+                    `${normalizeArtist(album.artist.name)}::${normalizeAlbum(
+                        album.title
+                    )}`
+            )
+        );
+
+        const filteredUnavailable = candidateUnavailable.filter((album) => {
+            if (ownedByMbid.has(album.albumMbid)) {
+                return false;
             }
 
-            filteredUnavailable.push(album);
-        }
+            const key = `${normalizeArtist(album.artistName)}::${normalizeAlbum(
+                album.albumTitle
+            )}`;
+            return !ownedByKey.has(key);
+        });
 
         // Format unavailable albums
         const unavailable = filteredUnavailable.map((album) => ({

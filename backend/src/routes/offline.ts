@@ -20,11 +20,12 @@ router.post("/albums/:id/download", async (req, res) => {
         const { quality } = downloadAlbumSchema.parse(req.body);
 
         // Get user's default quality if not specified
+        const settings = await prisma.userSettings.findUnique({
+            where: { userId },
+        });
+
         let selectedQuality: "original" | "high" | "medium" | "low" = quality || "medium";
         if (!quality) {
-            const settings = await prisma.userSettings.findUnique({
-                where: { userId },
-            });
             selectedQuality = (settings?.playbackQuality as "original" | "high" | "medium" | "low") || "medium";
         }
 
@@ -59,10 +60,6 @@ router.post("/albums/:id/download", async (req, res) => {
             album.tracks.length * avgSizeMb[selectedQuality];
 
         // Check user's cache limit
-        const settings = await prisma.userSettings.findUnique({
-            where: { userId },
-        });
-
         if (settings) {
             const currentCacheSize = await prisma.cachedTrack.aggregate({
                 where: { userId },
@@ -159,11 +156,21 @@ router.get("/albums", async (req, res) => {
         // Get all cached tracks grouped by album
         const cachedTracks = await prisma.cachedTrack.findMany({
             where: { userId },
-            include: {
+            select: {
+                localPath: true,
+                quality: true,
+                fileSizeMb: true,
                 track: {
-                    include: {
+                    select: {
+                        id: true,
+                        title: true,
+                        trackNo: true,
+                        duration: true,
                         album: {
-                            include: {
+                            select: {
+                                id: true,
+                                title: true,
+                                coverUrl: true,
                                 artist: {
                                     select: {
                                         id: true,
@@ -221,18 +228,8 @@ router.delete("/albums/:id", async (req, res) => {
         const userId = req.session.userId!;
         const albumId = req.params.id;
 
-        // Get all cached tracks for this album
-        const cachedTracks = await prisma.cachedTrack.findMany({
-            where: {
-                userId,
-                track: {
-                    albumId,
-                },
-            },
-        });
-
         // Delete all cached tracks for this album
-        await prisma.cachedTrack.deleteMany({
+        const deleted = await prisma.cachedTrack.deleteMany({
             where: {
                 userId,
                 track: {
@@ -243,7 +240,7 @@ router.delete("/albums/:id", async (req, res) => {
 
         res.json({
             message: "Album removed from cache",
-            deletedCount: cachedTracks.length,
+            deletedCount: deleted.count,
         });
     } catch (error) {
         logger.error("Delete cached album error:", error);
@@ -270,12 +267,13 @@ router.get("/stats", async (req, res) => {
         const usedMb = cacheStats._sum.fileSizeMb || 0;
         const maxMb = settings?.maxCacheSizeMb || 5120;
         const trackCount = cacheStats._count || 0;
+        const percentUsed = maxMb > 0 ? (usedMb / maxMb) * 100 : 0;
 
         res.json({
             usedMb,
             maxMb,
             availableMb: maxMb - usedMb,
-            percentUsed: (usedMb / maxMb) * 100,
+            percentUsed,
             trackCount,
         });
     } catch (error) {

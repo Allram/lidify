@@ -3,6 +3,7 @@ import session from "express-session";
 import RedisStore from "connect-redis";
 import cors from "cors";
 import helmet from "helmet";
+import compression from "compression";
 import { config } from "./config";
 import { redisClient } from "./utils/redis";
 import { prisma } from "./utils/db";
@@ -57,6 +58,7 @@ app.use(
         crossOriginResourcePolicy: { policy: "cross-origin" },
     })
 );
+app.use(compression());
 app.use(
     cors({
         origin: (origin, callback) => {

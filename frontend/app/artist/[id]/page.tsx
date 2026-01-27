@@ -1,5 +1,6 @@
 "use client";
 
+import { useMemo } from "react";
 import { useRouter } from "next/navigation";
 import {
     useAudioState,
@@ -95,12 +96,10 @@ export default function ArtistPage() {
         }
     }
 
-    // Play track handler (for popular tracks)
-    function handlePlayTrack(track: any) {
-        if (!artist?.topTracks) return;
-
+    const formattedTopTracks = useMemo(() => {
+        if (!artist?.topTracks) return [];
         const playableTracks = artist.topTracks.filter((t: any) => t.album?.id);
-        const formattedTracks = playableTracks.map((t: any) => ({
+        return playableTracks.map((t: any) => ({
             id: t.id,
             title: t.title,
             artist: { name: artist.name, id: artist.id },
@@ -111,11 +110,21 @@ export default function ArtistPage() {
             },
             duration: t.duration,
         }));
+    }, [artist?.topTracks, artist?.id, artist?.name]);
 
-        const startIndex = formattedTracks.findIndex(
-            (t: any) => t.id === track.id,
-        );
-        playTracks(formattedTracks, Math.max(0, startIndex));
+    const topTrackIndexById = useMemo(() => {
+        const map = new Map<string, number>();
+        for (let i = 0; i < formattedTopTracks.length; i += 1) {
+            map.set(formattedTopTracks[i].id, i);
+        }
+        return map;
+    }, [formattedTopTracks]);
+
+    // Play track handler (for popular tracks)
+    function handlePlayTrack(track: any) {
+        if (formattedTopTracks.length === 0) return;
+        const startIndex = topTrackIndexById.get(track.id) ?? 0;
+        playTracks(formattedTopTracks, Math.max(0, startIndex));
     }
 
     // Download album handler

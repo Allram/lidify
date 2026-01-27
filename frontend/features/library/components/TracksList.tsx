@@ -30,7 +30,7 @@ interface TrackRowProps {
     track: Track;
     index: number;
     isCurrentlyPlaying: boolean;
-    onPlayTrack: () => void;
+    onPlayTrack: (index: number) => void;
     onAddToQueue: (track: Track) => void;
     onShowAddToPlaylist: (trackId: string) => void;
     onDelete: (trackId: string, trackTitle: string) => void;
@@ -49,7 +49,7 @@ const TrackRow = memo(
         return (
             <div
                 key={track.id}
-                onClick={onPlayTrack}
+                onClick={() => onPlayTrack(index)}
                 data-tv-card
                 data-tv-card-index={index}
                 tabIndex={0}
@@ -176,6 +176,13 @@ export function TracksList({
     const [showPlaylistSelector, setShowPlaylistSelector] = useState(false);
     const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
 
+    const handlePlayTrack = useCallback(
+        (index: number) => {
+            onPlay(tracks, index);
+        },
+        [onPlay, tracks]
+    );
+
     const handleShowAddToPlaylist = useCallback((trackId: string) => {
         setSelectedTrackId(trackId);
         setShowPlaylistSelector(true);
@@ -228,7 +235,7 @@ export function TracksList({
                             track={track}
                             index={index}
                             isCurrentlyPlaying={isCurrentlyPlaying}
-                            onPlayTrack={() => onPlay(tracks, index)}
+                            onPlayTrack={handlePlayTrack}
                             onAddToQueue={onAddToQueue}
                             onShowAddToPlaylist={handleShowAddToPlaylist}
                             onDelete={onDelete}
