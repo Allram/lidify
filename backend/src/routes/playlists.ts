@@ -16,6 +16,179 @@ const createPlaylistSchema = z.object({
 });
 
 const addTrackSchema = z.object({
+    trackId: z.string(),
+});
+
+// GET /playlists
+router.get("/", async (req, res) => {
+    try {
+        if (!req.user) {
+            return res.status(401).json({ error: "Unauthorized" });
+        }
+        const userId = req.user.id;
+
+        // Get user's hidden playlists
+        const hiddenPlaylists = await prisma.hiddenPlaylist.findMany({
+            where: { userId },
+            select: { playlistId: true },
+        });
+        const hiddenPlaylistIds = new Set(
+            hiddenPlaylists.map((h) => h.playlistId)
+        );
+
+        const playlists = await prisma.playlist.findMany({
+            where: {
+                OR: [{ userId }, { isPublic: true }],
+            },
+            orderBy: { createdAt: "desc" },
+            include: {
+                user: {
+                    select: {
+                        username: true,
+                    },
+                },
+                items: {
+                    include: {
+                        track: {
+                            include: {
+                                album: {
+                                    include: {
+                                        artist: {
+                                            select: {
+                                                id: true,
+                                                name: true,
+                                            },
+                                        },
+                                    },
+                                },
+                            },
+                        },
+                    },
+                    orderBy: { sort: "asc" },
+                },
+            },
+        });
+
+        const playlistsWithCounts = playlists.map((playlist) => ({
+            ...playlist,
+            trackCount: playlist.items.length,
+            isOwner: playlist.userId === userId,
+            isHidden: hiddenPlaylistIds.has(playlist.id),
+        }));
+
+        // Debug: log shared playlists with user info
+        const sharedPlaylists = playlistsWithCounts.filter((p) => !p.isOwner);
+        if (sharedPlaylists.length > 0) {
+            logger.debug(
+                `[Playlists] Found ${sharedPlaylists.length} shared playlists for user ${userId}:`
+            );
+            sharedPlaylists.forEach((p) => {
+                logger.debug(
+                    `  - "${p.name}" by ${
+                        p.user?.username || "UNKNOWN"
+                    } (owner: ${p.userId})`
+                );
+            });
+        }
+
+        res.json(playlistsWithCounts);
+    } catch (error) {
+        logger.error("Get playlists error:", error);
+        res.status(500).json({ error: "Failed to get playlists" });
+    }
+});
+
+// POST /playlists
+router.post("/", async (req, res) => {
+    try {
+        if (!req.user) {
+            return res.status(401).json({ error: "Unauthorized" });
+        }
+        const userId = req.user.id;
+        const data = createPlaylistSchema.parse(req.body);
+
+        const playlist = await prisma.playlist.create({
+            data: {
+                userId,
+                name: data.name,
+                isPublic: data.isPublic,
+            },
+        });
+
+        res.json(playlist);
+    } catch (error) {
+        if (error instanceof z.ZodError) {
+            return res
+                .status(400)
+                .json({ error: "Invalid request", details: error.errors });
+        }
+        logger.error("Create playlist error:", error);
+        res.status(500).json({ error: "Failed to create playlist" });
+    }
+});
+
+// GET /playlists/:id
+router.get(":id", async (req, res) => {
+    try {
+        if (!req.user) {
+            return res.status(401).json({ error: "Unauthorized" });
+        }
+        const userId = req.user.id;
+
+        const playlist = await prisma.playlist.findUnique({
+            where: { id: req.params.id },
+            include: {
+                user: {
+                    select: {
+                        username: true,
+                    },
+                },
+                hiddenByUsers: {
+                    where: { userId },
+                    select: { id: true },
+                },
+                items: {
+                    include: {
+                        track: {
+                            include: {
+                                album: {
+                                    include: {
+                                        artist: {
+                                            select: {
+                                                id: true,
+                                                name: true,
+                                                mbid: true,
+                                            },
+                                        },
+                                    },
+                                },
+                            },
+                        },
+                    },
+                    orderBy: { sort: "asc" },
+                },
+                pendingTracks: {
+                    orderBy: { sort: "asc" },
+                },
+            },
+        });
+
+        if (!playlist) {
+            return res.status(404).json({ error: "Playlist not found" });
+        }
+
+        // Check access permissions
+        if (!playlist.isPublic && playlist.userId !== userId) {
+            return res.status(403).json({ error: "Access denied" });
+        }
+
+        // Format playlist items
+        const formattedItems = playlist.items.map((item) => ({
+            ...item,
+            type: "track" as const,
+            track: {
+                ...item.track,
+                album: {
                     ...item.track.album,
                     coverArt: item.track.album.coverUrl,
                 },
