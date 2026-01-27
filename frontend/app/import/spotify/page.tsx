@@ -74,6 +74,13 @@ interface ImportPreview {
     };
 }
 
+interface PreviewJob {
+    id: string;
+    status: "pending" | "processing" | "completed" | "failed";
+    error: string | null;
+    result: ImportPreview | null;
+}
+
 interface ImportJob {
     id: string;
     status:
@@ -102,12 +109,16 @@ function SpotifyImportPageContent() {
     const searchParams = useSearchParams();
     const { toast } = useToast();
     const hasAutoFetched = useRef(false);
+    const previewPollStartRef = useRef<number | null>(null);
+    const previewPollErrorCountRef = useRef(0);
+    const previewPollJobIdRef = useRef<string | null>(null);
 
     // State
     const [step, setStep] = useState<Step>("input");
     const [url, setUrl] = useState("");
     const [isLoading, setIsLoading] = useState(false);
     const [preview, setPreview] = useState<ImportPreview | null>(null);
+    const [previewJob, setPreviewJob] = useState<PreviewJob | null>(null);
     const [selectedAlbums, setSelectedAlbums] = useState<Set<string>>(
         new Set()
     );
@@ -130,34 +141,116 @@ function SpotifyImportPageContent() {
             (async () => {
                 setIsLoading(true);
                 try {
-                    const result = await api.post<ImportPreview>(
-                        "/spotify/preview",
-                        {
-                            url: urlParam,
-                        }
-                    );
-                    setPreview(result);
-                    setPlaylistName(result.playlist.name);
+                    const result = await api.post<{
+                        jobId: string;
+                        status: string;
+                    }>("/spotify/preview", {
+                        url: urlParam,
+                    });
 
-                    // Auto-select all albums (Soulseek can search for any track, even without MBID)
-                    const downloadableAlbumIds = result.albumsToDownload.map(
-                        (a) => a.albumMbid || a.spotifyAlbumId
-                    );
-                    setSelectedAlbums(new Set(downloadableAlbumIds));
+                    setPreview(null);
+                    setPlaylistName("");
+                    setSelectedAlbums(new Set());
 
-                    setStep("preview");
+                    setPreviewJob({
+                        id: result.jobId,
+                        status: result.status as PreviewJob["status"],
+                        error: null,
+                        result: null,
+                    });
                 } catch (err) {
                     const message =
                         err instanceof Error
                             ? err.message
                             : "Failed to fetch playlist";
                     toast.error(message);
-                } finally {
                     setIsLoading(false);
                 }
             })();
         }
     }, [searchParams, toast]);
+
+    // Poll for preview job status
+    useEffect(() => {
+        if (!previewJob || previewJob.status === "completed") {
+            previewPollStartRef.current = null;
+            previewPollErrorCountRef.current = 0;
+            previewPollJobIdRef.current = null;
+            return;
+        }
+
+        if (previewJob.status === "failed") {
+            const message = previewJob.error || "Failed to fetch playlist";
+            toast.error(message);
+            setIsLoading(false);
+            setPreviewJob(null);
+            return;
+        }
+
+        if (previewPollJobIdRef.current !== previewJob.id) {
+            previewPollJobIdRef.current = previewJob.id;
+            previewPollStartRef.current = Date.now();
+            previewPollErrorCountRef.current = 0;
+        }
+
+        const maxPreviewWaitMs = 5 * 60 * 1000; // 5 minutes
+        const maxPreviewPollErrors = 5;
+
+        const interval = setInterval(async () => {
+            try {
+                if (
+                    previewPollStartRef.current &&
+                    Date.now() - previewPollStartRef.current > maxPreviewWaitMs
+                ) {
+                    toast.error(
+                        "Preview is taking too long. Please try again."
+                    );
+                    setIsLoading(false);
+                    setPreviewJob(null);
+                    return;
+                }
+
+                const job = await api.get<PreviewJob>(
+                    `/spotify/preview/${previewJob.id}/status`
+                );
+                setPreviewJob(job);
+
+                if (job.status === "completed" && job.result) {
+                    setPreview(job.result);
+                    setPlaylistName(job.result.playlist.name);
+
+                    // Auto-select all albums (Soulseek can search for any track, even without MBID)
+                    const downloadableAlbumIds =
+                        job.result.albumsToDownload.map(
+                            (a) => a.albumMbid || a.spotifyAlbumId
+                        );
+                    setSelectedAlbums(new Set(downloadableAlbumIds));
+
+                    setStep("preview");
+                    setIsLoading(false);
+                    setPreviewJob(null);
+                } else if (job.status === "failed") {
+                    const message =
+                        job.error || "Failed to fetch playlist";
+                    toast.error(message);
+                    setIsLoading(false);
+                    setPreviewJob(null);
+                }
+            } catch (err) {
+                console.error("Failed to poll preview job status:", err);
+                previewPollErrorCountRef.current += 1;
+                if (previewPollErrorCountRef.current >= maxPreviewPollErrors) {
+                    toast.error(
+                        "Unable to fetch preview status. Please try again."
+                    );
+                    setIsLoading(false);
+                    setPreviewJob(null);
+                }
+            }
+        }, 2000);
+
+        return () => clearInterval(interval);
+    }, [previewJob, toast]);
 
     // Poll for import job status
     useEffect(() => {
@@ -217,25 +310,28 @@ function SpotifyImportPageContent() {
 
         setIsLoading(true);
         try {
-            const result = await api.post<ImportPreview>("/spotify/preview", {
-                url,
-            });
-            setPreview(result);
-            setPlaylistName(result.playlist.name);
-
-            // Auto-select all albums (Soulseek can search for any track, even without MBID)
-            const downloadableAlbumIds = result.albumsToDownload.map(
-                (a) => a.albumMbid || a.spotifyAlbumId
+            const result = await api.post<{ jobId: string; status: string }>(
+                "/spotify/preview",
+                { url }
             );
-            setSelectedAlbums(new Set(downloadableAlbumIds));
 
-            setStep("preview");
+            setPreview(null);
+            setPlaylistName("");
+            setSelectedAlbums(new Set());
+
+            setPreviewJob({
+                id: result.jobId,
+                status: result.status as PreviewJob["status"],
+                error: null,
+                result: null,
+            });
         } catch (err) {
             const message =
                 err instanceof Error ? err.message : "Failed to fetch playlist";
             toast.error(message);
-        } finally {
             setIsLoading(false);
+        } finally {
+            // Loading state will be cleared when preview job completes
         }
     };
 

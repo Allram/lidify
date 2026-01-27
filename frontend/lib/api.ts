@@ -293,6 +293,17 @@ class ApiClient {
                         _retryCount: 1, // Prevent infinite loops
                     });
                 }
+
+                console.log(
+                    "[API] Token refresh failed - user needs to re-login"
+                );
+                if (typeof window !== "undefined") {
+                    window.dispatchEvent(
+                        new CustomEvent("auth-expired", {
+                            detail: { reason: "refresh_failed" },
+                        })
+                    );
+                }
             }
 
             if (response.status === 401) {
